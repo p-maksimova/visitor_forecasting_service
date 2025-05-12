@@ -1,0 +1,27 @@
+services:    
+  fastapi_server:
+    build: .
+    command: uvicorn main:app --reload --host 0.0.0.0 --port 8000
+    ports:
+      - 8000:8000
+    depends_on:
+      - postgres
+  postgres:
+    image: postgres:15
+    container_name: postgres_db
+    restart: always
+    env_file:
+      - .env
+    ports:
+      - "6543:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+  web:
+    container_name: web
+    build: infrastructure/web/.
+    command: "streamlit run --server.port 8501 app.py"
+    ports:
+      - "8501:8501"
+
+volumes:
+  postgres_data:
