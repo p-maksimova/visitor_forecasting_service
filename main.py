@@ -3,7 +3,7 @@ from core.entities import User, Appointment, Patient, Transaction
 import datetime
 from config.database import async_session_maker
 from sqlalchemy import select, func
-from models.models import predict_model, prices
+from models.models import predict_model
 import asyncio
 from core.use_cases.auth import get_password_hash, verify_password, create_access_token, get_current_user
 
@@ -45,59 +45,6 @@ async def get_appointments(day: int,
         raise HTTPException(status_code=404, detail="Записи не найдены")
     
     return appointments
-
-
-@app.get("/predict/{day}/{month}/{year}/{doctor_name}")
-async def get_predict(day: int, 
-                      month: int, 
-                      year: int, 
-                      doctor_name: str,
-                      n_model: int | None = 1
-                      ):
-    
-    models_dict = {1: "model_log_reg.pkl", 2: "model_xgb_gs.pkl"}
-
-    # Проверка корректности даты
-    try:
-        target_date = datetime.date(year, month, day)
-    except ValueError as error:
-        raise HTTPException(status_code=400, detail=f"Передана некорректная дата: {error}")
-
-    data = []
-    # Получение записей
-    async with async_session_maker() as session:
-
-        query = select(Appointment.Appointment).filter(
-            Appointment.Appointment.appointment_date == target_date, 
-            Appointment.Appointment.doctor_name == doctor_name
-        )
-
-        result = await session.execute(query)
-        appointments = result.scalars().all()
-  
-    if not appointments:
-        raise HTTPException(status_code=404, detail="Записи не найдены")
-
-    # Получение данных по пациентам
-    async with async_session_maker() as session:
-
-        for appt in appointments:
-            patient_query = select(Patient.Patient).filter(Patient.Patient.patient_id == appt.patient_id)
-            patient_result = await session.execute(patient_query)
-            patient_record = patient_result.scalars().first()
-
-            row = Appointment.AppointmentInDB.model_validate(appt).model_dump()
-            row_add = Patient.PatientInDB.model_validate(patient_record).model_dump()
-            row.update(row_add)
-            data.append(row)
-
-    # Выполняем предсказание
-    try:
-        predictions = await asyncio.to_thread(predict_model, data, models_dict[n_model])
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Ошибка предсказания: {e}")
-    
-    return predictions     
 
 
 @app.post("/registration/")
@@ -149,7 +96,7 @@ async def auth_user(response: Response, user_data: User.UserAuth):
 
 @app.get("/me/")
 async def get_me(user_data: User.User = Depends(get_current_user)):
-    return user_data.user_id
+    return {"user_id": user_data.user_id, "name": user_data.first_name}
 
 
 @app.post("/logout/")
@@ -159,10 +106,10 @@ async def logout_user(response: Response):
 
 
 @app.get("/balance/")
-async def get_balance(user_id: int = Depends(get_me)):
+async def get_balance(user: dict = Depends(get_me)):
     async with async_session_maker() as session:
         query = select(func.coalesce(func.sum(Transaction.Transaction.amount), 0)).where(
-            Transaction.Transaction.user_id == user_id,
+            Transaction.Transaction.user_id == user["user_id"],
             Transaction.Transaction.status.in_(["completed", "pending"])
         )
         result = await session.execute(query)
@@ -170,30 +117,70 @@ async def get_balance(user_id: int = Depends(get_me)):
     return float(balance)
 
 
-'''
-!Добавить функцию в предикт
-async def payment(n_model, user_id: int = Depends(get_me),  balance: int = Depends(get_balance)):
-    amount_pay = prices[n_model]
+@app.get("/predict/{day}/{month}/{year}/{doctor_name}/{n_model}")
+async def get_predict(day: int, 
+                      month: int, 
+                      year: int, 
+                      doctor_name: str,
+                      n_model: int | None = 1,
+                      user: dict = Depends(get_me),
+                      balance: float = Depends(get_balance)):
+    
+    prices = {1: 5, 2: 10}
+    models_dict = {1: "model_log_reg.pkl", 2: "model_xgb_gs.pkl"}
+
+    # Проверка корректности даты
+    try:
+        target_date = datetime.date(year, month, day)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=f"Передана некорректная дата: {error}")
+
+    data = []
+    # Получение записей
+    async with async_session_maker() as session:
+
+        query = select(Appointment.Appointment).filter(
+            Appointment.Appointment.appointment_date == target_date, 
+            Appointment.Appointment.doctor_name == doctor_name
+        )
+
+        result = await session.execute(query)
+        appointments = result.scalars().all()
+  
+    if not appointments:
+        raise HTTPException(status_code=404, detail="Записи не найдены")
+
     async with async_session_maker() as session:
         async with session.begin():
-            if amount_pay > balance:
+            if prices[n_model] > balance:
                 raise HTTPException(status_code=400, detail="Недостаточно средств")
+            
             # Создаем запись транзакции со статусом PENDING
-            transaction = Transaction(
-                user_id=user_id,
-                amount=amount_pay,
+            transaction = Transaction.Transaction(
+                user_id=user["user_id"],
+                amount=-prices[n_model],
                 status="pending"
             )
             session.add(transaction)
             await session.flush()
 
-            #predicate_success = await get_predict()
+            # Получение данных по пациентам
+            for appt in appointments:
+                patient_query = select(Patient.Patient).filter(Patient.Patient.patient_id == appt.patient_id)
+                patient_result = await session.execute(patient_query)
+                patient_record = patient_result.scalars().first()
 
-            if predicate_success:
-                balance -= amount_pay
+                row = Appointment.AppointmentInDB.model_validate(appt).model_dump()
+                row_add = Patient.PatientInDB.model_validate(patient_record).model_dump()
+                row.update(row_add)
+                data.append(row)
+
+            # Выполняем предсказание
+            try:
+                predictions = await asyncio.to_thread(predict_model, data, models_dict[n_model])
                 transaction.status = "completed"
-            else:
+            except Exception as e:
                 transaction.status = "failed"
-
-    return {user_id: user_id, balance: balance, status: transaction.status}
-'''
+                raise HTTPException(status_code=500, detail=f"Ошибка предсказания: {e}")
+   
+    return predictions     

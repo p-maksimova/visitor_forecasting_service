@@ -9,8 +9,6 @@ from sklearn.dummy import DummyClassifier
 from sklearn.linear_model import LogisticRegression
 import os
 
-prices = {1: 5, 2: 10}
-
 def data_to_model(data) -> pd.DataFrame:
     data = pd.DataFrame(data)
     
