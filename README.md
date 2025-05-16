@@ -1,1 +1,1 @@
-# visitor_forecasting_service
+# Итоговый проект по курсу "Практикум по разработке ML-сервисов на Python"
