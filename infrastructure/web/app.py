@@ -207,7 +207,10 @@ def main():
             if st.button("Загрузить записи"):    
                 appointments = get_appointments(selected_date, selected_employee)
                 df = pd.DataFrame(appointments)
-                df = df[['slot_id', 'doctor_name', 'appointment_id']]
+                if df.empty:
+                    st.warning("Нет доступных записей")
+                else:
+                    df = df[['slot_id', 'doctor_name', 'appointment_id']]
 
         with col_right:
             if st.button("Получить прогноз"):    
